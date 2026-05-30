@@ -720,5 +720,16 @@ app.add_handler(
 )
 app.add_handler(CallbackQueryHandler(handle_noop, pattern=r"^noop$"))
 
-print("BOT STARTED")
-app.run_polling()
+import asyncio
+
+async def main():
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling()
+
+    print("BOT STARTED")
+
+    await asyncio.Event().wait()  # тримає бот живим
+
+if __name__ == "__main__":
+    asyncio.run(main())

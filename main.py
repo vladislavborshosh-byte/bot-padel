@@ -24,7 +24,7 @@ ADMIN_ID = int(os.environ["ADMIN_TELEGRAM_ID"])
 
 MENU_KB = ReplyKeyboardMarkup([["📋 Меню"]], resize_keyboard=True, is_persistent=True)
 
-conn = sqlite3.connect("padel.db", check_same_thread=False)
+conn = sqlite3.connect("bot/padel.db", check_same_thread=False)
 conn.execute("PRAGMA journal_mode=WAL")  # faster concurrent reads
 conn.execute("PRAGMA synchronous=NORMAL")  # safe but faster writes
 

@@ -1,7 +1,7 @@
 import os
 import sqlite3
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
 from telegram import (
     BotCommand,
@@ -19,7 +19,6 @@ from telegram.ext import (
     ConversationHandler,
     ContextTypes,
     filters,
-    JobQueue,
 )
 
 TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
@@ -43,7 +42,10 @@ CREATE TABLE IF NOT EXISTS bookings (
     day           TEXT,
     time          TEXT,
     training_type TEXT,
-    level         TEXT
+    level         TEXT,
+    partner_name  TEXT,
+    partner_phone TEXT,
+    needs_partner INTEGER DEFAULT 0
 )
 """)
 
@@ -54,7 +56,7 @@ CREATE TABLE IF NOT EXISTS settings (
 )
 """)
 
-for col in ("name", "phone"):
+for col in ("name", "phone", "partner_name", "partner_phone", "needs_partner"):
     try:
         conn.execute(f"ALTER TABLE bookings ADD COLUMN {col} TEXT")
     except Exception:
@@ -62,41 +64,48 @@ for col in ("name", "phone"):
 
 conn.commit()
 
+# ── slot definitions ───────────────────────────────────────────────────────
+
 TIMES = {
     "individual": [
         "09:00-10:00", "10:00-11:00", "11:00-12:00", "12:00-13:00",
-        "13:00-14:00", "14:00-15:00", "15:00-16:00", "16:00-17:00",
-        "17:00-18:00", "18:00-19:00", "19:00-20:00", "20:00-21:00",
+        "13:00-14:00", "15:00-16:00", "16:00-17:00",
+        "17:00-18:00", "18:00-19:00", "19:00-20:00",
     ],
     "pair": [
-        "09:00-10:30", "10:30-12:00", "12:00-13:30", "13:30-15:00",
-        "15:00-16:30", "16:30-18:00", "18:00-19:30", "19:30-21:00",
+        "09:00-10:00", "10:00-11:00", "11:00-12:00", "12:00-13:00",
+        "13:00-14:00", "15:00-16:00", "16:00-17:00",
+        "17:00-18:00", "18:00-19:00", "19:00-20:00",
     ],
     "group": [
-        "09:00-10:30", "10:30-12:00", "12:00-13:30", "13:30-15:00",
-        "15:00-16:30", "16:30-18:00", "18:00-19:30", "19:30-21:00",
+        "09:00-10:00", "10:00-11:00", "11:00-12:00", "12:00-13:00",
+        "13:00-14:00", "15:00-16:00", "16:00-17:00",
+        "17:00-18:00", "18:00-19:00", "19:00-20:00",
+    ],
+    "game_group": [
+        "10:00-11:30",
+        "11:30-13:00",
     ],
 }
 
 TRAININGS = {
-    "pair": {"title": "Парне", "capacity": 2},
-    "individual": {"title": "Індивідуальне", "capacity": 1},
-    "group": {"title": "Групове", "capacity": 4},
+    "pair":       {"title": "Парне",              "capacity": 2},
+    "individual": {"title": "Індивідуальне",      "capacity": 1},
+    "group":      {"title": "Групове тренування", "capacity": 4},
+    "game_group": {"title": "Ігрове групове",     "capacity": 4},
 }
 
 LEVELS = ["E-D(-)", "D(+)-C(-)", "C(+)-🔝"]
 
-DAY_KEYS = ["saturday", "sunday"]
-DAY_NAMES_DEFAULT = {"saturday": "Субота", "sunday": "Неділя"}
+DAY_KEYS = ["friday", "saturday", "sunday"]
+DAY_NAMES_DEFAULT = {"friday": "П'ятниця", "saturday": "Субота", "sunday": "Неділя"}
 
-ASK_NAME, ASK_PHONE = range(2)
-CONFIRM_CANCEL = 10
+ASK_NAME, ASK_PHONE, ASK_HAS_PARTNER, ASK_PARTNER_NAME, ASK_PARTNER_PHONE = range(5)
 
 
 # ── date helpers ───────────────────────────────────────────────────────────
 
 def get_day_dates():
-    """Return dict: {saturday: 'DD.MM', sunday: 'DD.MM'} from settings, or empty strings."""
     result = {}
     for key in DAY_KEYS:
         row = conn.execute("SELECT value FROM settings WHERE key=?", (f"date_{key}",)).fetchone()
@@ -113,7 +122,6 @@ def set_day_date(day_key, date_str):
 
 
 def day_display_name(day_key):
-    """Return e.g. 'Субота 14 червня' if date is set, else just 'Субота'."""
     dates = get_day_dates()
     date_str = dates.get(day_key, "")
     base = DAY_NAMES_DEFAULT.get(day_key, day_key)
@@ -144,6 +152,13 @@ def times_overlap(a, b):
 def get_day_bookings(day):
     return conn.execute(
         "SELECT time, training_type, level FROM bookings WHERE day=?", (day,)
+    ).fetchall()
+
+
+def get_slot_people(day, slot_time, training):
+    return conn.execute(
+        "SELECT name, needs_partner FROM bookings WHERE day=? AND time=? AND training_type=?",
+        (day, slot_time, training)
     ).fetchall()
 
 
@@ -202,32 +217,28 @@ def slot_available_for_level(day, time, training, level):
 # ── menus ──────────────────────────────────────────────────────────────────
 
 def days_menu():
-    return InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton(day_display_name("saturday"), callback_data="day_saturday")],
-            [InlineKeyboardButton(day_display_name("sunday"), callback_data="day_sunday")],
-        ]
-    )
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(day_display_name("friday"),   callback_data="day_friday")],
+        [InlineKeyboardButton(day_display_name("saturday"), callback_data="day_saturday")],
+        [InlineKeyboardButton(day_display_name("sunday"),   callback_data="day_sunday")],
+    ])
 
 
 def trainings_menu(day):
-    return InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton("Парне", callback_data=f"training_{day}_pair")],
-            [InlineKeyboardButton("Індивідуальне", callback_data=f"training_{day}_individual")],
-            [InlineKeyboardButton("Групове", callback_data=f"training_{day}_group")],
-            [InlineKeyboardButton("⬅️ Назад", callback_data="back_days")],
-        ]
-    )
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("Парне",              callback_data=f"training_{day}_pair")],
+        [InlineKeyboardButton("Індивідуальне",      callback_data=f"training_{day}_individual")],
+        [InlineKeyboardButton("Групове тренування", callback_data=f"training_{day}_group")],
+        [InlineKeyboardButton("Ігрове групове",     callback_data=f"training_{day}_game_group")],
+        [InlineKeyboardButton("⬅️ Назад",           callback_data="back_days")],
+    ])
 
 
 def levels_menu(day, training):
-    return InlineKeyboardMarkup(
-        [
-            *[[InlineKeyboardButton(lvl, callback_data=f"lvl_{day}_{training}_{lvl}")] for lvl in LEVELS],
-            [InlineKeyboardButton("⬅️ Назад", callback_data=f"day_{day}")],
-        ]
-    )
+    return InlineKeyboardMarkup([
+        *[[InlineKeyboardButton(lvl, callback_data=f"lvl_{day}_{training}_{lvl}")] for lvl in LEVELS],
+        [InlineKeyboardButton("⬅️ Назад", callback_data=f"day_{day}")],
+    ])
 
 
 def slots_for_level_menu(day, training, level):
@@ -236,12 +247,18 @@ def slots_for_level_menu(day, training, level):
     for time in TIMES[training]:
         available, booked, cap = compute_slot(time, training, level, all_bookings)
         if available:
-            keyboard.append(
-                [InlineKeyboardButton(
-                    f"{time} ({booked}/{cap})",
-                    callback_data=f"slot_{day}_{training}_{level}_{time}",
-                )]
-            )
+            people = get_slot_people(day, time, training)
+            if people:
+                names = ", ".join(
+                    f"{p[0]}{'⚠️' if p[1] else ''}" for p in people
+                )
+                label = f"{time} ({booked}/{cap}) — {names}"
+            else:
+                label = f"{time} ({booked}/{cap})"
+            keyboard.append([InlineKeyboardButton(
+                label,
+                callback_data=f"slot_{day}_{training}_{level}_{time}",
+            )])
     if not keyboard:
         keyboard = [[InlineKeyboardButton("❌ Немає вільних слотів для вашого рівня", callback_data="noop")]]
     keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"training_{day}_{training}")])
@@ -266,7 +283,9 @@ async def handle_day(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    _, day, training = q.data.split("_")
+    parts = q.data.split("_")
+    day = parts[1]
+    training = "_".join(parts[2:])
     await q.edit_message_text("Оберіть свій рівень:", reply_markup=levels_menu(day, training))
 
 
@@ -278,7 +297,7 @@ async def handle_level(update: Update, context: ContextTypes.DEFAULT_TYPE):
     training = parts[2]
     level = "_".join(parts[3:])
     await q.edit_message_text(
-        f"📊 Рівень: {level}\n\nОберіть час:",
+        f"📊 Рівень: {level}\n\nОберіть час (⚠️ = шукає пару):",
         reply_markup=slots_for_level_menu(day, training, level),
     )
 
@@ -293,7 +312,7 @@ async def handle_noop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
 
 
-# ── ConversationHandler: slot → name → phone → confirm ────────────────────
+# ── ConversationHandler ────────────────────────────────────────────────────
 
 async def conv_entry_slot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -304,7 +323,6 @@ async def conv_entry_slot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     training = parts[2]
     level = parts[3]
     time = "_".join(parts[4:])
-
     user = q.from_user
 
     if conn.execute(
@@ -340,41 +358,141 @@ async def ask_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ASK_PHONE
 
 
-async def confirm_booking(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    phone = update.message.text.strip()
+async def after_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["phone"] = update.message.text.strip()
+    training = context.user_data.get("training")
+
+    if training == "pair":
+        await update.message.reply_text(
+            "👥 Чи маєте ви пару?",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Так, маю пару", callback_data="has_partner_yes")],
+                [InlineKeyboardButton("❌ Ні, шукаю пару", callback_data="has_partner_no")],
+            ])
+        )
+        return ASK_HAS_PARTNER
+
+    return await _finalize_booking(update, context)
+
+
+async def handle_has_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+
+    if q.data == "has_partner_yes":
+        context.user_data["needs_partner"] = False
+        await q.edit_message_text("👤 Введіть ім'я та прізвище вашої пари:")
+        return ASK_PARTNER_NAME
+    else:
+        context.user_data["needs_partner"] = True
+        context.user_data["partner_name"] = None
+        context.user_data["partner_phone"] = None
+        return await _finalize_booking_query(q, context)
+
+
+async def ask_partner_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["partner_name"] = update.message.text.strip()
+    await update.message.reply_text("📞 Введіть номер телефону вашої пари:")
+    return ASK_PARTNER_PHONE
+
+
+async def after_partner_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["partner_phone"] = update.message.text.strip()
+    return await _finalize_booking(update, context)
+
+
+async def _finalize_booking(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     d = context.user_data
+    needs_partner = d.get("needs_partner", False)
 
     conn.execute(
         """INSERT INTO bookings
-           (user_id, username, name, phone, day, time, training_type, level)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        (user.id, user.username, d["name"], phone, d["day"], d["time"], d["training"], d["level"]),
+           (user_id, username, name, phone, day, time, training_type, level,
+            partner_name, partner_phone, needs_partner)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            user.id, user.username, d["name"], d["phone"],
+            d["day"], d["time"], d["training"], d["level"],
+            d.get("partner_name"), d.get("partner_phone"),
+            1 if needs_partner else 0,
+        ),
     )
     conn.commit()
+
+    partner_info = ""
+    if d.get("partner_name"):
+        partner_info = f"\n👥 Пара: {d['partner_name']}  📞 {d['partner_phone']}"
+    elif needs_partner:
+        partner_info = "\n⚠️ Шукає пару"
 
     await update.message.reply_text(
         f"✅ Ви записані!\n\n"
         f"👤 Ім'я: {d['name']}\n"
-        f"📞 Телефон: {phone}\n"
+        f"📞 Телефон: {d['phone']}\n"
         f"📅 День: {day_display_name(d['day'])}\n"
         f"⏰ Час: {d['time']}\n"
         f"🎾 Тип: {TRAININGS[d['training']]['title']}\n"
-        f"📊 Рівень: {d['level']}\n\n"
+        f"📊 Рівень: {d['level']}"
+        f"{partner_info}\n\n"
         f"Для нового запису — /book"
     )
 
-    # Notify admin
     username_str = f"@{user.username}" if user.username else "без username"
     await update.get_bot().send_message(
         ADMIN_ID,
         f"🆕 Новий запис!\n\n"
         f"👤 {d['name']} ({username_str})\n"
-        f"📞 {phone}\n"
+        f"📞 {d['phone']}\n"
         f"📅 {day_display_name(d['day'])}  ⏰ {d['time']}\n"
         f"🎾 {TRAININGS[d['training']]['title']}  📊 {d['level']}"
+        f"{partner_info}"
+    )
+    return ConversationHandler.END
+
+
+async def _finalize_booking_query(q, context):
+    user = q.from_user
+    d = context.user_data
+    needs_partner = d.get("needs_partner", False)
+
+    conn.execute(
+        """INSERT INTO bookings
+           (user_id, username, name, phone, day, time, training_type, level,
+            partner_name, partner_phone, needs_partner)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            user.id, user.username, d["name"], d["phone"],
+            d["day"], d["time"], d["training"], d["level"],
+            d.get("partner_name"), d.get("partner_phone"),
+            1 if needs_partner else 0,
+        ),
+    )
+    conn.commit()
+
+    partner_info = "\n⚠️ Шукає пару" if needs_partner else ""
+
+    await q.edit_message_text(
+        f"✅ Ви записані!\n\n"
+        f"👤 Ім'я: {d['name']}\n"
+        f"📞 Телефон: {d['phone']}\n"
+        f"📅 День: {day_display_name(d['day'])}\n"
+        f"⏰ Час: {d['time']}\n"
+        f"🎾 {TRAININGS[d['training']]['title']}  📊 {d['level']}"
+        f"{partner_info}\n\n"
+        f"Для нового запису — /book"
     )
 
+    username_str = f"@{user.username}" if user.username else "без username"
+    await q.get_bot().send_message(
+        ADMIN_ID,
+        f"🆕 Новий запис!\n\n"
+        f"👤 {d['name']} ({username_str})\n"
+        f"📞 {d['phone']}\n"
+        f"📅 {day_display_name(d['day'])}  ⏰ {d['time']}\n"
+        f"🎾 {TRAININGS[d['training']]['title']}  📊 {d['level']}"
+        f"{partner_info}"
+    )
     return ConversationHandler.END
 
 
@@ -388,8 +506,8 @@ async def cancel_conv(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def my_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     rows = conn.execute(
-        "SELECT id, day, time, training_type, level, name, phone FROM bookings "
-        "WHERE user_id=? ORDER BY day, time",
+        "SELECT id, day, time, training_type, level, name, phone, partner_name, partner_phone, needs_partner "
+        "FROM bookings WHERE user_id=? ORDER BY day, time",
         (user.id,),
     ).fetchall()
 
@@ -398,11 +516,18 @@ async def my_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await update.message.reply_text(f"📋 Ваші записи ({len(rows)}):")
-    for booking_id, day, time, training, level, name, phone in rows:
+    for booking_id, day, time, training, level, name, phone, partner_name, partner_phone, needs_partner in rows:
+        partner_info = ""
+        if partner_name:
+            partner_info = f"\n👥 Пара: {partner_name}  📞 {partner_phone}"
+        elif needs_partner:
+            partner_info = "\n⚠️ Шукає пару"
+
         text = (
             f"📅 {day_display_name(day)}  ⏰ {time}\n"
             f"🎾 {TRAININGS[training]['title']}  📊 {level}\n"
             f"👤 {name}  📞 {phone}"
+            f"{partner_info}"
         )
         await update.message.reply_text(
             text,
@@ -413,7 +538,6 @@ async def my_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_cancel_booking(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """First tap — ask for confirmation."""
     q = update.callback_query
     await q.answer()
     booking_id = int(q.data.split("_")[-1])
@@ -438,17 +562,14 @@ async def handle_cancel_booking(update: Update, context: ContextTypes.DEFAULT_TY
         f"📅 {day_display_name(day)}  ⏰ {time}\n"
         f"🎾 {TRAININGS[training]['title']}  📊 {level}\n"
         f"👤 {name}",
-        reply_markup=InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("✅ Так, скасувати", callback_data=f"confirm_cancel_{booking_id}"),
-                InlineKeyboardButton("↩️ Назад", callback_data=f"keep_booking_{booking_id}"),
-            ]
-        ])
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Так, скасувати", callback_data=f"confirm_cancel_{booking_id}"),
+            InlineKeyboardButton("↩️ Назад", callback_data=f"keep_booking_{booking_id}"),
+        ]])
     )
 
 
 async def handle_confirm_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Second tap — actually delete."""
     q = update.callback_query
     await q.answer()
     booking_id = int(q.data.split("_")[-1])
@@ -472,7 +593,6 @@ async def handle_confirm_cancel(update: Update, context: ContextTypes.DEFAULT_TY
     conn.commit()
     await q.edit_message_text("🗑 Запис скасовано.")
 
-    # Notify admin
     username_str = f"@{username}" if username else "без username"
     await q.get_bot().send_message(
         ADMIN_ID,
@@ -485,7 +605,6 @@ async def handle_confirm_cancel(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 async def handle_keep_booking(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """User changed their mind — restore original cancel button."""
     q = update.callback_query
     await q.answer()
     booking_id = int(q.data.split("_")[-1])
@@ -510,10 +629,9 @@ async def handle_keep_booking(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
 
 
-# ── reminders ─────────────────────────────────────────────────────────────
+# ── reminders ──────────────────────────────────────────────────────────────
 
 async def send_reminders(context: ContextTypes.DEFAULT_TYPE):
-    """Runs every hour. Sends reminder 24h and 1h before training."""
     now = datetime.now(PRAGUE_TZ)
     dates = get_day_dates()
 
@@ -539,29 +657,24 @@ async def send_reminders(context: ContextTypes.DEFAULT_TYPE):
             diff = slot_dt - now
             diff_hours = diff.total_seconds() / 3600
 
-            # 24h reminder (between 23.5h and 24.5h before)
             if 23.5 <= diff_hours <= 24.5:
                 try:
                     await context.bot.send_message(
                         user_id,
-                        f"⏰ Нагадування!\n\n"
-                        f"Завтра у вас тренування:\n"
+                        f"⏰ Нагадування!\n\nЗавтра у вас тренування:\n"
                         f"📅 {day_display_name(day_key)}  ⏰ {slot_time}\n"
-                        f"🎾 {TRAININGS[training]['title']}  📊 {level}\n\n"
-                        f"Гарного тренування! 🎾"
+                        f"🎾 {TRAININGS[training]['title']}  📊 {level}\n\nГарного тренування! 🎾"
                     )
                 except Exception:
                     pass
 
-            # 1h reminder (between 0.5h and 1.5h before)
             elif 0.5 <= diff_hours <= 1.5:
                 try:
                     await context.bot.send_message(
                         user_id,
                         f"🔔 Через 1 годину тренування!\n\n"
                         f"📅 {day_display_name(day_key)}  ⏰ {slot_time}\n"
-                        f"🎾 {TRAININGS[training]['title']}  📊 {level}\n\n"
-                        f"Не забудьте взяти ракетку! 🎾"
+                        f"🎾 {TRAININGS[training]['title']}  📊 {level}\n\nНе забудьте взяти ракетку! 🎾"
                     )
                 except Exception:
                     pass
@@ -570,19 +683,20 @@ async def send_reminders(context: ContextTypes.DEFAULT_TYPE):
 # ── /setdates ──────────────────────────────────────────────────────────────
 
 async def set_dates(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Usage: /setdates 14.06 15.06"""
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("❌ Немає доступу.")
         return
 
     args = context.args
-    if len(args) != 2:
+    if len(args) != 3:
         await update.message.reply_text(
-            "❌ Використання: /setdates DD.MM DD.MM\nНаприклад: /setdates 14.06 15.06"
+            "❌ Використання: /setdates DD.MM DD.MM DD.MM\n"
+            "Наприклад: /setdates 13.06 14.06 15.06\n"
+            "(п'ятниця субота неділя)"
         )
         return
 
-    for i, (day_key, date_str) in enumerate(zip(DAY_KEYS, args)):
+    for day_key, date_str in zip(DAY_KEYS, args):
         try:
             datetime.strptime(date_str + f".{datetime.now().year}", "%d.%m.%Y")
             set_day_date(day_key, date_str)
@@ -592,6 +706,7 @@ async def set_dates(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         f"✅ Дати встановлено:\n"
+        f"📅 {day_display_name('friday')}\n"
         f"📅 {day_display_name('saturday')}\n"
         f"📅 {day_display_name('sunday')}"
     )
@@ -601,14 +716,14 @@ async def set_dates(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def build_schedule_text():
     rows = conn.execute(
-        "SELECT day, time, training_type, name, phone, level, username "
+        "SELECT day, time, training_type, name, phone, level, username, partner_name, partner_phone, needs_partner "
         "FROM bookings ORDER BY day, time, training_type"
     ).fetchall()
     if not rows:
         return None
     slots = defaultdict(list)
-    for day, time, training, name, phone, level, username in rows:
-        slots[(day, time, training)].append((name, phone, level, username))
+    for day, time, training, name, phone, level, username, partner_name, partner_phone, needs_partner in rows:
+        slots[(day, time, training)].append((name, phone, level, username, partner_name, partner_phone, needs_partner))
     text = "📋 РОЗКЛАД\n"
     current_day = None
     for (day, time, training), people in slots.items():
@@ -617,15 +732,20 @@ def build_schedule_text():
             current_day = day
             text += f"\n📅 {day_display_name(day)}\n"
         text += f"\n⏰ {time}  🎾 {TRAININGS[training]['title']} ({len(people)}/{cap})\n"
-        for name, phone, level, username in people:
-            text += f"  👤 {name}  📞 {phone}  📊 {level}\n"
+        for name, phone, level, username, partner_name, partner_phone, needs_partner in people:
+            line = f"  👤 {name}  📞 {phone}  📊 {level}"
+            if partner_name:
+                line += f"\n     👥 Пара: {partner_name}  📞 {partner_phone}"
+            elif needs_partner:
+                line += "  ⚠️ шукає пару"
+            text += line + "\n"
     return text
 
 
 def build_freeslots_text():
     text = "🟢 ВІЛЬНІ СЛОТИ\n"
     any_free = False
-    for day in ("saturday", "sunday"):
+    for day in DAY_KEYS:
         all_bookings = get_day_bookings(day)
         day_lines = []
         for training, info in TRAININGS.items():
@@ -650,7 +770,7 @@ def build_freeslots_text():
     return text if any_free else "❌ Вільних слотів немає — всі зайняті."
 
 
-# ── /schedule ──────────────────────────────────────────────────────────────
+# ── /schedule & /freeslots ─────────────────────────────────────────────────
 
 async def schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -659,8 +779,6 @@ async def schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = build_schedule_text()
     await update.message.reply_text(text or "Немає записів.")
 
-
-# ── /freeslots ─────────────────────────────────────────────────────────────
 
 async def free_slots(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -673,16 +791,16 @@ async def free_slots(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def menu_inline(user_id):
     kb = [
-        [InlineKeyboardButton("📅 Записатися", callback_data="menucmd_book")],
-        [InlineKeyboardButton("📋 Мої записи", callback_data="menucmd_mybookings")],
+        [InlineKeyboardButton("📅 Записатися",  callback_data="menucmd_book")],
+        [InlineKeyboardButton("📋 Мої записи",  callback_data="menucmd_mybookings")],
     ]
     if user_id == ADMIN_ID:
         kb += [
-            [InlineKeyboardButton("🗓 Розклад", callback_data="menucmd_schedule")],
-            [InlineKeyboardButton("🟢 Вільні слоти", callback_data="menucmd_freeslots")],
+            [InlineKeyboardButton("🗓 Розклад",          callback_data="menucmd_schedule")],
+            [InlineKeyboardButton("🟢 Вільні слоти",     callback_data="menucmd_freeslots")],
             [InlineKeyboardButton("📤 Експорт розкладу", callback_data="menucmd_export")],
-            [InlineKeyboardButton("📆 Встановити дати", callback_data="menucmd_setdates")],
-            [InlineKeyboardButton("🗑 Скинути все", callback_data="menucmd_resetall")],
+            [InlineKeyboardButton("📆 Встановити дати",  callback_data="menucmd_setdates")],
+            [InlineKeyboardButton("🗑 Скинути все",      callback_data="menucmd_resetall")],
         ]
     return InlineKeyboardMarkup(kb)
 
@@ -712,7 +830,7 @@ async def menucmd_dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif cmd == "mybookings":
         rows = conn.execute(
-            "SELECT id, day, time, training_type, level, name, phone FROM bookings "
+            "SELECT id, day, time, training_type, level, name, phone, needs_partner FROM bookings "
             "WHERE user_id=? ORDER BY day, time",
             (user_id,),
         ).fetchall()
@@ -721,8 +839,9 @@ async def menucmd_dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         text = f"📋 Ваші записи ({len(rows)}):\n"
         kb = []
-        for bid, day, time, training, level, name, phone in rows:
-            text += f"\n📅 {day_display_name(day)}  ⏰ {time}  🎾 {TRAININGS[training]['title']}  📊 {level}"
+        for bid, day, time, training, level, name, phone, needs_partner in rows:
+            partner_str = "  ⚠️ шукає пару" if needs_partner else ""
+            text += f"\n📅 {day_display_name(day)}  ⏰ {time}  🎾 {TRAININGS[training]['title']}  📊 {level}{partner_str}"
             kb.append([InlineKeyboardButton(f"❌ Скасувати {time}", callback_data=f"cancel_booking_{bid}")])
         kb += back
         await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
@@ -748,7 +867,6 @@ async def menucmd_dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not text:
             await q.edit_message_text("Немає записів для експорту.", reply_markup=InlineKeyboardMarkup(back))
             return
-        # Send as a separate message so it's easy to forward/copy
         await q.get_bot().send_message(user_id, text)
         await q.edit_message_text("📤 Розклад надіслано окремим повідомленням.", reply_markup=InlineKeyboardMarkup(back))
 
@@ -757,13 +875,12 @@ async def menucmd_dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.answer("❌ Немає доступу.", show_alert=True)
             return
         dates = get_day_dates()
+        fri = dates.get("friday", "не встановлено")
         sat = dates.get("saturday", "не встановлено")
         sun = dates.get("sunday", "не встановлено")
         await q.edit_message_text(
-            f"📆 Поточні дати:\n"
-            f"Субота: {sat}\n"
-            f"Неділя: {sun}\n\n"
-            f"Для зміни використовуйте команду:\n/setdates DD.MM DD.MM\n\nНаприклад: /setdates 14.06 15.06",
+            f"📆 Поточні дати:\nП'ятниця: {fri}\nСубота: {sat}\nНеділя: {sun}\n\n"
+            f"Для зміни:\n/setdates DD.MM DD.MM DD.MM\n\nНаприклад: /setdates 13.06 14.06 15.06",
             reply_markup=InlineKeyboardMarkup(back)
         )
 
@@ -799,20 +916,18 @@ async def reset_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def post_init(application):
     user_commands = [
-        BotCommand("book", "Записатися на тренування"),
+        BotCommand("book",       "Записатися на тренування"),
         BotCommand("mybookings", "Мої записи"),
-        BotCommand("menu", "Список команд"),
+        BotCommand("menu",       "Список команд"),
     ]
     admin_commands = user_commands + [
-        BotCommand("schedule", "Розклад усіх записів"),
+        BotCommand("schedule",  "Розклад усіх записів"),
         BotCommand("freeslots", "Всі вільні слоти"),
-        BotCommand("setdates", "Встановити дати вихідних"),
-        BotCommand("resetall", "Видалити всі записи"),
+        BotCommand("setdates",  "Встановити дати вихідних"),
+        BotCommand("resetall",  "Видалити всі записи"),
     ]
     await application.bot.set_my_commands(user_commands)
     await application.bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=ADMIN_ID))
-
-    # Schedule reminder job — runs every hour
     application.job_queue.run_repeating(send_reminders, interval=3600, first=10)
 
 
@@ -821,8 +936,11 @@ app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
 conv_handler = ConversationHandler(
     entry_points=[CallbackQueryHandler(conv_entry_slot, pattern=r"^slot_")],
     states={
-        ASK_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_phone)],
-        ASK_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, confirm_booking)],
+        ASK_NAME:          [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_phone)],
+        ASK_PHONE:         [MessageHandler(filters.TEXT & ~filters.COMMAND, after_phone)],
+        ASK_HAS_PARTNER:   [CallbackQueryHandler(handle_has_partner, pattern=r"^has_partner_")],
+        ASK_PARTNER_NAME:  [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_partner_phone)],
+        ASK_PARTNER_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, after_partner_phone)],
     },
     fallbacks=[
         CommandHandler("cancel", cancel_conv),
@@ -830,25 +948,25 @@ conv_handler = ConversationHandler(
     ],
 )
 
-app.add_handler(CommandHandler("book", book))
-app.add_handler(CommandHandler("start", book))
-app.add_handler(CommandHandler("schedule", schedule))
-app.add_handler(CommandHandler("freeslots", free_slots))
-app.add_handler(CommandHandler("menu", menu))
+app.add_handler(CommandHandler("book",       book))
+app.add_handler(CommandHandler("start",      book))
+app.add_handler(CommandHandler("schedule",   schedule))
+app.add_handler(CommandHandler("freeslots",  free_slots))
+app.add_handler(CommandHandler("menu",       menu))
 app.add_handler(CommandHandler("mybookings", my_bookings))
-app.add_handler(CommandHandler("resetall", reset_all))
-app.add_handler(CommandHandler("setdates", set_dates))
+app.add_handler(CommandHandler("resetall",   reset_all))
+app.add_handler(CommandHandler("setdates",   set_dates))
 app.add_handler(MessageHandler(filters.Regex("^📋 Меню$"), handle_menu_button))
 app.add_handler(conv_handler)
-app.add_handler(CallbackQueryHandler(menucmd_dispatch, pattern=r"^menucmd_"))
-app.add_handler(CallbackQueryHandler(handle_back_days, pattern=r"^back_days$"))
-app.add_handler(CallbackQueryHandler(handle_day, pattern=r"^day_"))
-app.add_handler(CallbackQueryHandler(handle_training, pattern=r"^training_"))
-app.add_handler(CallbackQueryHandler(handle_level, pattern=r"^lvl_"))
+app.add_handler(CallbackQueryHandler(menucmd_dispatch,      pattern=r"^menucmd_"))
+app.add_handler(CallbackQueryHandler(handle_back_days,      pattern=r"^back_days$"))
+app.add_handler(CallbackQueryHandler(handle_day,            pattern=r"^day_"))
+app.add_handler(CallbackQueryHandler(handle_training,       pattern=r"^training_"))
+app.add_handler(CallbackQueryHandler(handle_level,          pattern=r"^lvl_"))
 app.add_handler(CallbackQueryHandler(handle_cancel_booking, pattern=r"^cancel_booking_"))
 app.add_handler(CallbackQueryHandler(handle_confirm_cancel, pattern=r"^confirm_cancel_"))
-app.add_handler(CallbackQueryHandler(handle_keep_booking, pattern=r"^keep_booking_"))
-app.add_handler(CallbackQueryHandler(handle_noop, pattern=r"^noop$"))
+app.add_handler(CallbackQueryHandler(handle_keep_booking,   pattern=r"^keep_booking_"))
+app.add_handler(CallbackQueryHandler(handle_noop,           pattern=r"^noop$"))
 
 print("BOT STARTED")
 app.run_polling()

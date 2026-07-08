@@ -92,7 +92,7 @@ TRAININGS = {
     "pair":       {"title": "Парне",              "capacity": 2},
     "individual": {"title": "Індивідуальне",      "capacity": 1},
     "group":      {"title": "Групове тренування", "capacity": 4},
-    "game_group": {"title": "Ігрове групове",     "capacity": 4},
+    "game_group": {"title": "Ігрове тренування",     "capacity": 4},
 }
 
 LEVELS = ["E-D(-)", "D(+)-C(-)", "C(+)-🔝"]
@@ -229,7 +229,7 @@ def trainings_menu(day):
         [InlineKeyboardButton("Парне",              callback_data=f"training_{day}_pair")],
         [InlineKeyboardButton("Індивідуальне",      callback_data=f"training_{day}_individual")],
         [InlineKeyboardButton("Групове тренування", callback_data=f"training_{day}_group")],
-        [InlineKeyboardButton("Ігрове групове",     callback_data=f"training_{day}_game_group")],
+        [InlineKeyboardButton("Ігрове тренування",     callback_data=f"training_{day}_game_group")],
         [InlineKeyboardButton("⬅️ Назад",           callback_data="back_days")],
     ])
 
@@ -249,15 +249,16 @@ def slots_for_level_menu(day, training, level):
         if available:
             people = get_slot_people(day, time, training)
             if people:
-                names = ", ".join(
-                    f"{p[0]}{'⚠️' if p[1] else ''}" for p in people
-                )
+                if training == "pair":
+                    names = ", ".join(f"{p[0]}{'⚠️' if p[1] else ''}" for p in people)
+                else:
+                    names = ", ".join(p[0] for p in people)
                 label = f"{time} ({booked}/{cap}) — {names}"
             else:
                 label = f"{time} ({booked}/{cap})"
             keyboard.append([InlineKeyboardButton(
                 label,
-                callback_data=f"slot_{day}_{training}_{level}_{time}",
+                callback_data=f"slot|{day}|{training}|{level}|{time}",
             )])
     if not keyboard:
         keyboard = [[InlineKeyboardButton("❌ Немає вільних слотів для вашого рівня", callback_data="noop")]]
@@ -311,7 +312,7 @@ async def handle_level(update: Update, context: ContextTypes.DEFAULT_TYPE):
         training = parts[2]
         level = "_".join(parts[3:])
     await q.edit_message_text(
-        f"📊 Рівень: {level}\n\nОберіть час (⚠️ = шукає пару):",
+        f"📊 Рівень: {level}\n\nОберіть час:",
         reply_markup=slots_for_level_menu(day, training, level),
     )
 
@@ -332,11 +333,11 @@ async def conv_entry_slot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
 
-    parts = q.data.split("_")
+    parts = q.data.split("|")
     day = parts[1]
     training = parts[2]
     level = parts[3]
-    time = "_".join(parts[4:])
+    time = parts[4]
     user = q.from_user
 
     if conn.execute(
@@ -948,7 +949,7 @@ async def post_init(application):
 app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
 
 conv_handler = ConversationHandler(
-    entry_points=[CallbackQueryHandler(conv_entry_slot, pattern=r"^slot_")],
+    entry_points=[CallbackQueryHandler(conv_entry_slot, pattern=r"^slot\|")],
     states={
         ASK_NAME:          [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_phone)],
         ASK_PHONE:         [MessageHandler(filters.TEXT & ~filters.COMMAND, after_phone)],

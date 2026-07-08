@@ -286,16 +286,30 @@ async def handle_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
     parts = q.data.split("_")
     day = parts[1]
     training = "_".join(parts[2:])
-    await q.edit_message_text("Оберіть свій рівень:", reply_markup=levels_menu(day, training))
+    # Individual training — skip level selection
+    if training == "individual":
+        await q.edit_message_text(
+            "Оберіть час:",
+            reply_markup=slots_for_level_menu(day, training, "none"),
+        )
+    else:
+        await q.edit_message_text("Оберіть свій рівень:", reply_markup=levels_menu(day, training))
 
 
 async def handle_level(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
+    # Format: lvl_{day}_{training}_{level}
+    # training can be "game_group" (has underscore), so parse carefully
     parts = q.data.split("_")
     day = parts[1]
-    training = parts[2]
-    level = "_".join(parts[3:])
+    # Check if training is game_group
+    if parts[2] == "game" and parts[3] == "group":
+        training = "game_group"
+        level = "_".join(parts[4:])
+    else:
+        training = parts[2]
+        level = "_".join(parts[3:])
     await q.edit_message_text(
         f"📊 Рівень: {level}\n\nОберіть час (⚠️ = шукає пару):",
         reply_markup=slots_for_level_menu(day, training, level),

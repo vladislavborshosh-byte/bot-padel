@@ -23,6 +23,11 @@ from telegram.ext import (
 
 TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 ADMIN_ID = int(os.environ["ADMIN_TELEGRAM_ID"])
+ADMIN_IDS = {ADMIN_ID}
+# Add second admin if set
+_admin2 = os.environ.get("ADMIN_TELEGRAM_ID2", "")
+if _admin2:
+    ADMIN_IDS.add(int(_admin2))
 
 PRAGUE_TZ = pytz.timezone("Europe/Prague")
 
@@ -454,8 +459,9 @@ async def _finalize_booking(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     username_str = f"@{user.username}" if user.username else "без username"
-    await update.get_bot().send_message(
-        ADMIN_ID,
+    for _aid in ADMIN_IDS:
+      await update.get_bot().send_message(
+        _aid,
         f"🆕 Новий запис!\n\n"
         f"👤 {d['name']} ({username_str})\n"
         f"📞 {d['phone']}\n"
@@ -499,8 +505,9 @@ async def _finalize_booking_query(q, context):
     )
 
     username_str = f"@{user.username}" if user.username else "без username"
-    await q.get_bot().send_message(
-        ADMIN_ID,
+    for _aid in ADMIN_IDS:
+      await q.get_bot().send_message(
+        _aid,
         f"🆕 Новий запис!\n\n"
         f"👤 {d['name']} ({username_str})\n"
         f"📞 {d['phone']}\n"
@@ -568,7 +575,7 @@ async def handle_cancel_booking(update: Update, context: ContextTypes.DEFAULT_TY
 
     user_id, day, time, training, level, name = row
 
-    if q.from_user.id != user_id and q.from_user.id != ADMIN_ID:
+    if q.from_user.id != user_id and q.from_user.id not in ADMIN_IDS:
         await q.edit_message_text("❌ Немає доступу.")
         return
 
@@ -600,7 +607,7 @@ async def handle_confirm_cancel(update: Update, context: ContextTypes.DEFAULT_TY
 
     user_id, username, name, phone, day, time, training, level = row
 
-    if q.from_user.id != user_id and q.from_user.id != ADMIN_ID:
+    if q.from_user.id != user_id and q.from_user.id not in ADMIN_IDS:
         await q.edit_message_text("❌ Немає доступу.")
         return
 
@@ -609,8 +616,9 @@ async def handle_confirm_cancel(update: Update, context: ContextTypes.DEFAULT_TY
     await q.edit_message_text("🗑 Запис скасовано.")
 
     username_str = f"@{username}" if username else "без username"
-    await q.get_bot().send_message(
-        ADMIN_ID,
+    for _aid in ADMIN_IDS:
+      await q.get_bot().send_message(
+        _aid,
         f"🗑 Скасування запису!\n\n"
         f"👤 {name} ({username_str})\n"
         f"📞 {phone}\n"
@@ -698,7 +706,7 @@ async def send_reminders(context: ContextTypes.DEFAULT_TYPE):
 # ── /setdates ──────────────────────────────────────────────────────────────
 
 async def set_dates(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
+    if update.effective_user.id not in ADMIN_IDS:
         await update.message.reply_text("❌ Немає доступу.")
         return
 
@@ -788,7 +796,7 @@ def build_freeslots_text():
 # ── /schedule & /freeslots ─────────────────────────────────────────────────
 
 async def schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
+    if update.effective_user.id not in ADMIN_IDS:
         await update.message.reply_text("❌ Немає доступу.")
         return
     text = build_schedule_text()
@@ -796,7 +804,7 @@ async def schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def free_slots(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
+    if update.effective_user.id not in ADMIN_IDS:
         await update.message.reply_text("❌ Немає доступу.")
         return
     await update.message.reply_text(build_freeslots_text())
@@ -809,7 +817,7 @@ def menu_inline(user_id):
         [InlineKeyboardButton("📅 Записатися",  callback_data="menucmd_book")],
         [InlineKeyboardButton("📋 Мої записи",  callback_data="menucmd_mybookings")],
     ]
-    if user_id == ADMIN_ID:
+    if user_id in ADMIN_IDS:
         kb += [
             [InlineKeyboardButton("🗓 Розклад",          callback_data="menucmd_schedule")],
             [InlineKeyboardButton("🟢 Вільні слоти",     callback_data="menucmd_freeslots")],
@@ -862,20 +870,20 @@ async def menucmd_dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
 
     elif cmd == "schedule":
-        if user_id != ADMIN_ID:
+        if user_id not in ADMIN_IDS:
             await q.answer("❌ Немає доступу.", show_alert=True)
             return
         text = build_schedule_text()
         await q.edit_message_text(text or "Немає записів.", reply_markup=InlineKeyboardMarkup(back))
 
     elif cmd == "freeslots":
-        if user_id != ADMIN_ID:
+        if user_id not in ADMIN_IDS:
             await q.answer("❌ Немає доступу.", show_alert=True)
             return
         await q.edit_message_text(build_freeslots_text(), reply_markup=InlineKeyboardMarkup(back))
 
     elif cmd == "export":
-        if user_id != ADMIN_ID:
+        if user_id not in ADMIN_IDS:
             await q.answer("❌ Немає доступу.", show_alert=True)
             return
         text = build_schedule_text()
@@ -886,7 +894,7 @@ async def menucmd_dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("📤 Розклад надіслано окремим повідомленням.", reply_markup=InlineKeyboardMarkup(back))
 
     elif cmd == "setdates":
-        if user_id != ADMIN_ID:
+        if user_id not in ADMIN_IDS:
             await q.answer("❌ Немає доступу.", show_alert=True)
             return
         dates = get_day_dates()
@@ -900,7 +908,7 @@ async def menucmd_dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif cmd == "resetall":
-        if user_id != ADMIN_ID:
+        if user_id not in ADMIN_IDS:
             await q.answer("❌ Немає доступу.", show_alert=True)
             return
         count = conn.execute("SELECT COUNT(*) FROM bookings").fetchone()[0]
@@ -915,7 +923,7 @@ async def menucmd_dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ── /resetall ──────────────────────────────────────────────────────────────
 
 async def reset_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
+    if update.effective_user.id not in ADMIN_IDS:
         await update.message.reply_text("❌ Немає доступу.")
         return
     count = conn.execute("SELECT COUNT(*) FROM bookings").fetchone()[0]
@@ -942,7 +950,8 @@ async def post_init(application):
         BotCommand("resetall",  "Видалити всі записи"),
     ]
     await application.bot.set_my_commands(user_commands)
-    await application.bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=ADMIN_ID))
+    for admin_id in ADMIN_IDS:
+        await application.bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=admin_id))
     application.job_queue.run_repeating(send_reminders, interval=3600, first=10)
 
 

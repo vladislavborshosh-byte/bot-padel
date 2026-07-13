@@ -72,25 +72,55 @@ conn.commit()
 # ── slot definitions ───────────────────────────────────────────────────────
 
 TIMES = {
-    "individual": [
-        "09:00-10:00", "10:00-11:00", "11:00-12:00", "12:00-13:00",
-        "13:00-14:00", "15:00-16:00", "16:00-17:00",
-        "17:00-18:00", "18:00-19:00", "19:00-20:00",
-    ],
-    "pair": [
-        "09:00-10:00", "10:00-11:00", "11:00-12:00", "12:00-13:00",
-        "13:00-14:00", "15:00-16:00", "16:00-17:00",
-        "17:00-18:00", "18:00-19:00", "19:00-20:00",
-    ],
-    "group": [
-        "09:00-10:00", "10:00-11:00", "11:00-12:00", "12:00-13:00",
-        "13:00-14:00", "15:00-16:00", "16:00-17:00",
-        "17:00-18:00", "18:00-19:00", "19:00-20:00",
-    ],
-    "game_group": [
-        "10:00-11:30",
-        "11:30-13:00",
-    ],
+    "friday": {
+        "individual": [
+            "11:30-12:30", "12:30-13:30", "13:30-14:30", "14:30-15:30", "15:30-16:30",
+            "18:00-19:00", "19:00-20:00", "20:00-21:00", "21:00-22:00",
+        ],
+        "pair": [
+            "11:30-12:30", "12:30-13:30", "13:30-14:30", "14:30-15:30", "15:30-16:30",
+            "18:00-19:00", "19:00-20:00", "20:00-21:00", "21:00-22:00",
+        ],
+    },
+    "saturday": {
+        "individual": [
+            "09:00-10:00", "10:00-11:00", "11:00-12:00", "12:00-13:00",
+            "13:00-14:00", "15:00-16:00", "16:00-17:00",
+            "17:00-18:00", "18:00-19:00", "19:00-20:00",
+        ],
+        "pair": [
+            "09:00-10:00", "10:00-11:00", "11:00-12:00", "12:00-13:00",
+            "13:00-14:00", "15:00-16:00", "16:00-17:00",
+            "17:00-18:00", "18:00-19:00", "19:00-20:00",
+        ],
+        "group": [
+            "09:00-10:00", "10:00-11:00", "11:00-12:00", "12:00-13:00",
+            "13:00-14:00", "15:00-16:00", "16:00-17:00",
+            "17:00-18:00", "18:00-19:00", "19:00-20:00",
+        ],
+        "game_group": [
+            "10:00-11:30",
+            "11:30-13:00",
+        ],
+    },
+    "sunday": {
+        "individual": [
+            "09:00-10:00", "10:00-11:00", "11:00-12:00", "12:00-13:00",
+            "13:00-14:00", "15:00-16:00", "16:00-17:00", "18:00-19:00",
+        ],
+        "pair": [
+            "09:00-10:00", "10:00-11:00", "11:00-12:00", "12:00-13:00",
+            "13:00-14:00", "15:00-16:00", "16:00-17:00", "18:00-19:00",
+        ],
+        "group": [
+            "09:00-10:00", "10:00-11:00", "11:00-12:00", "12:00-13:00",
+            "13:00-14:00", "15:00-16:00", "16:00-17:00", "18:00-19:00",
+        ],
+        "game_group": [
+            "10:00-11:30",
+            "11:30-13:00",
+        ],
+    },
 }
 
 TRAININGS = {
@@ -230,13 +260,17 @@ def days_menu():
 
 
 def trainings_menu(day):
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("Парне",              callback_data=f"training_{day}_pair")],
-        [InlineKeyboardButton("Індивідуальне",      callback_data=f"training_{day}_individual")],
-        [InlineKeyboardButton("Групове тренування", callback_data=f"training_{day}_group")],
-        [InlineKeyboardButton("Ігрове тренування",     callback_data=f"training_{day}_game_group")],
-        [InlineKeyboardButton("⬅️ Назад",           callback_data="back_days")],
-    ])
+    kb = [
+        [InlineKeyboardButton("Парне",         callback_data=f"training_{day}_pair")],
+        [InlineKeyboardButton("Індивідуальне", callback_data=f"training_{day}_individual")],
+    ]
+    if day != "friday":
+        kb += [
+            [InlineKeyboardButton("Групове тренування", callback_data=f"training_{day}_group")],
+            [InlineKeyboardButton("Ігрове тренування",  callback_data=f"training_{day}_game_group")],
+        ]
+    kb.append([InlineKeyboardButton("⬅️ Назад", callback_data="back_days")])
+    return InlineKeyboardMarkup(kb)
 
 
 def levels_menu(day, training):
@@ -249,7 +283,7 @@ def levels_menu(day, training):
 def slots_for_level_menu(day, training, level):
     all_bookings = get_day_bookings(day)
     keyboard = []
-    for time in TIMES[training]:
+    for time in TIMES.get(day, {}).get(training, []):
         available, booked, cap = compute_slot(time, training, level, all_bookings)
         if available:
             people = get_slot_people(day, time, training)
@@ -771,9 +805,12 @@ def build_freeslots_text():
     for day in DAY_KEYS:
         all_bookings = get_day_bookings(day)
         day_lines = []
+        day_times = TIMES.get(day, {})
         for training, info in TRAININGS.items():
+            if training not in day_times:
+                continue
             free_times = []
-            for slot_time in TIMES[training]:
+            for slot_time in day_times[training]:
                 cap = info["capacity"]
                 exact = sum(1 for t, tt, _ in all_bookings if t == slot_time and tt == training)
                 conflict = any(

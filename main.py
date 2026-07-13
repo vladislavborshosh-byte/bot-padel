@@ -301,7 +301,12 @@ def slots_for_level_menu(day, training, level):
             )])
     if not keyboard:
         keyboard = [[InlineKeyboardButton("❌ Немає вільних слотів для вашого рівня", callback_data="noop")]]
-    keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"training_{day}_{training}")])
+    # For individual training — back goes to training type menu, not level menu
+    if training == "individual":
+        back_cb = f"day_{day}"
+    else:
+        back_cb = f"training_{day}_{training}"
+    keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data=back_cb)])
     return InlineKeyboardMarkup(keyboard)
 
 

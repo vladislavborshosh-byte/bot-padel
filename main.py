@@ -471,6 +471,12 @@ async def after_partner_phone(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def _finalize_booking(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     d = context.user_data
+    # Safety check — if session was lost after bot restart
+    if not all(k in d for k in ("day", "time", "training", "level")):
+        await update.message.reply_text(
+            "⚠️ Сесія застаріла. Будь ласка, почніть заново — /book"
+        )
+        return ConversationHandler.END
     needs_partner = d.get("needs_partner", False)
 
     conn.execute(
@@ -522,6 +528,12 @@ async def _finalize_booking(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def _finalize_booking_query(q, context):
     user = q.from_user
     d = context.user_data
+    # Safety check — if session was lost after bot restart
+    if not all(k in d for k in ("day", "time", "training", "level")):
+        await q.edit_message_text(
+            "⚠️ Сесія застаріла. Будь ласка, почніть заново — /book"
+        )
+        return ConversationHandler.END
     needs_partner = d.get("needs_partner", False)
 
     conn.execute(

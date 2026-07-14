@@ -408,12 +408,18 @@ async def conv_entry_slot(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def ask_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        await update.effective_chat.send_message("Будь ласка, введіть ім'я текстом:")
+        return ASK_NAME
     context.user_data["name"] = update.message.text.strip()
     await update.message.reply_text("📞 Введіть ваш номер телефону:")
     return ASK_PHONE
 
 
 async def after_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        await update.effective_chat.send_message("Будь ласка, введіть номер телефону текстом:")
+        return ASK_PHONE
     context.user_data["phone"] = update.message.text.strip()
     training = context.user_data.get("training")
 
@@ -446,12 +452,18 @@ async def handle_has_partner(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def ask_partner_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        await update.effective_chat.send_message("Будь ласка, введіть ім'я текстом:")
+        return ASK_PARTNER_NAME
     context.user_data["partner_name"] = update.message.text.strip()
     await update.message.reply_text("📞 Введіть номер телефону вашої пари:")
     return ASK_PARTNER_PHONE
 
 
 async def after_partner_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        await update.effective_chat.send_message("Будь ласка, введіть номер телефону текстом:")
+        return ASK_PARTNER_PHONE
     context.user_data["partner_phone"] = update.message.text.strip()
     return await _finalize_booking(update, context)
 
